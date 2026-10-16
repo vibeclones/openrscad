@@ -1,0 +1,103 @@
+name: Build upstream releases
+
+on:
+  schedule:
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many of the newest upstream releases to consider"
+        required: false
+        default: "3"
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency: build
+
+env:
+  UP: matthova/openrscad
+  APP: openrscad
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find releases we don't have yet
+        run: |
+          : > todo.txt
+          for tag in $(gh release list -R "$UP" --limit "${{ inputs.limit || '3' }}" --exclude-drafts --exclude-pre-releases --json tagName -q '.[].tagName'); do
+            [ -d "v${tag#v}" ] || echo "$tag" >> todo.txt
+          done
+          cat todo.txt
+          if [ -s todo.txt ]; then echo "NEED=true" >> "$GITHUB_ENV"; fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.NEED == 'true'
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        if: env.NEED == 'true'
+        with:
+          node-version: 20
+
+      - name: Install wasm-pack
+        if: env.NEED == 'true'
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Build each new release
+        if: env.NEED == 'true'
+        run: |
+          # One clone for every tag, so the Rust build cache (target/) carries over between releases.
+          git clone --quiet --filter=blob:none "https://github.com/$UP.git" up
+          while read -r tag; do
+            ver="${tag#v}"
+            echo "::group::Build $tag"
+            git -C up clean -fdxq -e target
+            git -C up checkout --quiet --force "tags/$tag"
+            if (cd up/web && npm run build:wasm && npm ci && npm run build) && [ -f up/web/dist/playground.html ]; then
+              mkdir "v$ver"
+              cp -a up/web/dist/. "v$ver/"
+              # Open straight into the playground; keep the project's own front page as home.html.
+              mv "v$ver/index.html" "v$ver/home.html"
+              printf '<!doctype html><meta charset="utf-8"><title>OpenRSCAD</title><meta http-equiv="refresh" content="0; url=playground.html"><a href="playground.html">Open the playground</a> · <a href="home.html">About</a>\n' > "v$ver/index.html"
+              cp up/LICENSE* "v$ver/" 2>/dev/null || true
+              printf 'Built from %s at tag %s\nhttps://github.com/%s/tree/%s\nBuilt with the project'"'"'s own web build. The front page was renamed home.html and index.html redirects to playground.html; nothing else changed.\n' "$UP" "$tag" "$UP" "$tag" > "v$ver/SOURCE.txt"
+            else
+              echo "::warning::build failed for $tag"
+            fi
+            echo "::endgroup::"
+          done < todo.txt
+          rm -rf up
+
+      - name: Update latest and versions.json
+        run: |
+          versions=$(find . -maxdepth 1 -type d -name 'v[0-9]*' -printf '%f\n' | sed 's/^v//' | sort -rV)
+          [ -n "$versions" ] || { echo "No versions built"; exit 0; }
+          latest=$(echo "$versions" | head -n1)
+          mkdir -p latest
+          printf '<!doctype html><meta charset="utf-8"><title>%s</title><meta http-equiv="refresh" content="0; url=../v%s/"><link rel="canonical" href="../v%s/"><a href="../v%s/">Open %s %s</a>\n' "$APP" "$latest" "$latest" "$latest" "$APP" "$latest" > latest/index.html
+          echo "$versions" | jq -R . | jq -s --arg latest "$latest" '{latest: $latest, versions: .}' > versions.json
+          cat versions.json
+
+      - name: Commit and request a Pages build
+        run: |
+          rm -f todo.txt
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing new"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add upstream release builds"
+          git push
+          gh api -X POST "repos/${{ github.repository }}/pages/builds"
