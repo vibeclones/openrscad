@@ -24,7 +24,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
 
@@ -68,7 +68,7 @@ jobs:
               cp -a up/web/dist/. "v$ver/"
               # Open straight into the playground; keep the project's own front page as home.html.
               mv "v$ver/index.html" "v$ver/home.html"
-              printf '<!doctype html><meta charset="utf-8"><title>OpenRSCAD</title><meta http-equiv="refresh" content="0; url=playground.html"><a href="playground.html">Open the playground</a> · <a href="home.html">About</a>\n' > "v$ver/index.html"
+              printf '<!doctype html><meta charset="utf-8"><title>OpenRSCAD</title><meta http-equiv="refresh" content="0; url=playground.html"><a href="playground.html">Open the playground</a> Â· <a href="home.html">About</a>\n' > "v$ver/index.html"
               cp up/LICENSE* "v$ver/" 2>/dev/null || true
               printf 'Built from %s at tag %s\nhttps://github.com/%s/tree/%s\nBuilt with the project'"'"'s own web build. The front page was renamed home.html and index.html redirects to playground.html; nothing else changed.\n' "$UP" "$tag" "$UP" "$tag" > "v$ver/SOURCE.txt"
             else
@@ -87,6 +87,9 @@ jobs:
           printf '<!doctype html><meta charset="utf-8"><title>%s</title><meta http-equiv="refresh" content="0; url=../v%s/"><link rel="canonical" href="../v%s/"><a href="../v%s/">Open %s %s</a>\n' "$APP" "$latest" "$latest" "$latest" "$APP" "$latest" > latest/index.html
           echo "$versions" | jq -R . | jq -s --arg latest "$latest" '{latest: $latest, versions: .}' > versions.json
           cat versions.json
+
+      - name: Keep the site under its size cap
+        run: bash scripts/prune.sh
 
       - name: Commit and request a Pages build
         run: |
